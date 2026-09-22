@@ -129,6 +129,19 @@ def run(
             ocean_buffer=1,
         )
         cfg.mask_file = water_binary_mask
+        # The buffer keeps near-shore pixels in processing, but in the similarity
+        # windows it lets water back in, so similarity gets the exact coastline.
+        # Made in lat/lon; dolphin warps it to its own grid.
+        water_binary_mask_nobuffer = (
+            cfg.work_directory / "water_binary_mask_nobuffer.temp.tif"
+        )
+        create_mask_from_distance(
+            water_distance_file=pge_runconfig.dynamic_ancillary_file_group.mask_file,
+            output_file=water_binary_mask_nobuffer,
+            land_buffer=0,
+            ocean_buffer=0,
+        )
+        cfg.phase_linking.similarity_mask_file = water_binary_mask_nobuffer
     else:
         water_binary_mask = None
 
@@ -293,15 +306,8 @@ def create_products(
         matching_water_binary_mask = (
             cfg.work_directory / "water_binary_mask_nobuffer.tif"
         )
+        # Already made in lat/lon, with no buffer, for the similarity layer
         tmp_outfile = matching_water_binary_mask.with_suffix(".temp.tif")
-        create_mask_from_distance(
-            water_distance_file=pge_runconfig.dynamic_ancillary_file_group.mask_file,
-            # Make the file in lat/lon
-            output_file=tmp_outfile,
-            # Give no buffer around the water
-            land_buffer=0,
-            ocean_buffer=0,
-        )
         # Then need to warp to match the output UTM files
         # Warp to match the output UTM files
         stitching.warp_to_match(
