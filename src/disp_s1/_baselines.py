@@ -1,12 +1,16 @@
+from datetime import timedelta
+
 import isce3
 import numpy as np
 from dolphin import baseline
 from dolphin._types import Filename
 from numpy.typing import ArrayLike
 from opera_utils import (
+    CslcParseError,
     get_cslc_orbit,
     get_radar_wavelength,
 )
+from opera_utils._cslc import get_s1_orbit
 from pyproj import CRS, Transformer
 
 
@@ -20,6 +24,39 @@ def _get_grids(x: ArrayLike, y: ArrayLike, epsg: int) -> tuple:
     lon = lon.reshape(X.shape)
     lat = lat.reshape(Y.shape)
     return lon, lat
+
+
+def _get_orbit(h5file: Filename) -> isce3.core.Orbit:
+    """Read a CSLC's orbit, tolerating filenames `opera_utils` cannot parse.
+
+    `get_cslc_orbit` parses the filename for one purpose: to choose between the
+    S1 and NISAR orbit readers. DISP-S1 is S1-only, so that dispatch can only
+    ever pick S1 here -- but it raises `CslcParseError` first on any name
+    outside the OPERA patterns.
+
+    That bites on disp-s1's *own output*. A compressed SLC written from
+    COMPASS-named inputs is called
+    ``compressed_<burst_id>_<ref>_<start>_<end>.h5``, which matches neither
+    `CSLC_S1_FILE_REGEX` nor `COMPRESSED_CSLC_S1_FILE_REGEX` (both want the
+    full ``OPERA_L2_...`` form). The file itself is fine -- it carries a
+    complete ``metadata/orbit`` group in the standard S1 layout -- so the only
+    thing standing between it and a baseline is the name. Ministack 1 of a
+    chain takes ministack 0's compressed SLC as its reference, so this fails
+    every run after the first.
+
+    Fall back to the S1 reader, which is the only one this PGE could have used.
+    """
+    try:
+        return get_cslc_orbit(h5file)
+    except CslcParseError:
+        times, positions, velocities, reference_epoch = get_s1_orbit(h5file)
+        state_vectors = [
+            isce3.core.StateVector(
+                isce3.core.DateTime(reference_epoch + timedelta(seconds=t)), x, v
+            )
+            for t, x, v in zip(times, positions, velocities)
+        ]
+        return isce3.core.Orbit(state_vectors)
 
 
 def compute_baselines(
@@ -72,8 +109,8 @@ def compute_baselines(
     wavelength = get_radar_wavelength(h5file_ref)
     side = isce3.core.LookSide.Right
 
-    orbit_ref = get_cslc_orbit(h5file_ref)
-    orbit_sec = get_cslc_orbit(h5file_sec)
+    orbit_ref = _get_orbit(h5file_ref)
+    orbit_sec = _get_orbit(h5file_sec)
 
     baselines = []
     for lon, lat in zip(lon_arr, lat_arr):
