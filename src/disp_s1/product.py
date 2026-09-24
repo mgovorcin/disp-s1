@@ -580,6 +580,34 @@ def _create_corrections_group(
         )
 
 
+def _generation_datetime(cslc_file: Filename) -> datetime.datetime:
+    """Return a CSLC filename's generation datetime, or its acquisition date.
+
+    An OPERA CSLC name carries two datetimes -- acquisition and generation::
+
+        OPERA_L2_CSLC-S1_T087-185683-IW2_20221228T161651Z_20240504T181714Z_...
+
+    The COMPASS convention carries only the acquisition date::
+
+        t087_185683_iw2_20221228.h5
+
+    Both are accepted by `opera_utils` (`CSLC_S1_FILE_REGEX` and
+    `COMPASS_FILE_REGEX` respectively), so a stack named the second way reaches
+    here intact and then raises `IndexError` on the missing second date -- at
+    the very end of a run, after every product has been written but before any
+    is complete.
+
+    Fall back to the acquisition date. The field records when the inputs were
+    produced, and for a name that does not encode that, the acquisition date is
+    the only thing the filename honestly supplies. The precise value lives in
+    the CSLC's own `identification/processing_date_time`, which this function
+    deliberately does not open: it is called once per input per product, and
+    reading every input's metadata to fill one attribute is not worth the I/O.
+    """
+    dates = get_dates(cslc_file)
+    return dates[1] if len(dates) > 1 else dates[0]
+
+
 def _create_identification_group(
     output_name: Filename,
     pge_runconfig: RunConfig,
@@ -776,7 +804,7 @@ def _create_identification_group(
             [get_dates(f)[0] for f in pge_runconfig.input_file_group.cslc_file_list]
         )
         processing_dts = sorted(
-            get_dates(f)[1]
+            _generation_datetime(f)
             for f in pge_runconfig.input_file_group.cslc_file_list
             if "compressed" not in str(f).lower()
         )

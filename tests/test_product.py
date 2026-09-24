@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 
 import h5py
@@ -82,3 +83,37 @@ def test_create_compressed_slc(tmp_path):
         assert "/metadata/orbit" in hf
         assert "/identification/zero_doppler_start_time" in hf
         assert "/metadata/processing_information/input_burst_metadata/wavelength" in hf
+
+
+class TestGenerationDatetime:
+    """A CSLC filename may or may not carry a generation datetime."""
+
+    def test_opera_name_uses_the_generation_datetime(self):
+        """The second of the two datetimes an OPERA name carries."""
+        from disp_s1.product import _generation_datetime
+
+        name = (
+            "OPERA_L2_CSLC-S1_T087-185683-IW2_20221228T161651Z"
+            "_20240504T181714Z_S1A_VV_v1.1.h5"
+        )
+        assert _generation_datetime(Path(name)).date() == date(2024, 5, 4)
+
+    def test_compass_name_falls_back_to_the_acquisition_date(self):
+        """Regression: `get_dates(f)[1]` raised IndexError on these names.
+
+        A COMPASS-convention stack (a stripmap one, say) reached product
+        creation intact and then failed on the missing second date -- after
+        every product had been written but before any was complete.
+        """
+        from disp_s1.product import _generation_datetime
+
+        got = _generation_datetime(Path("t095_000004_iw1_20161019.h5"))
+
+        assert got.date() == date(2016, 10, 19)
+
+    def test_compressed_slc_name_uses_its_second_date(self):
+        from disp_s1.product import _generation_datetime
+
+        got = _generation_datetime(Path("compressed_20170101_20161019_20170101.h5"))
+
+        assert got.date() == date(2016, 10, 19)
