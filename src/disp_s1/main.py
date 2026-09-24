@@ -45,7 +45,9 @@ __all__ = ["InputValidationError"]
 class OutputPathsWithCorrections(OutputPaths):
     """Extensions of dolphin's OutputPaths with ionospheric corrections."""
 
-    ionospheric_corrections: list[Path]
+    #: `None` when the corrections workflow was skipped for lack of CSLC static
+    #: layers. `create_products` renders an empty ionosphere layer in that case.
+    ionospheric_corrections: list[Path] | None
 
 
 @log_runtime
@@ -196,19 +198,14 @@ def run(
             f" {out_paths.timeseries_paths}"
         )
 
-    # Run dolphin's corrections workflow
-    out_corrections_paths = run_corrections(
-        cfg=cfg,
-        correction_options=cfg.correction_options,
-        timeseries_paths=out_paths.timeseries_paths,
-        out_dir=cfg.work_directory,
-        debug=debug,
+    ionospheric_corrections = _maybe_run_corrections(
+        cfg=cfg, timeseries_paths=out_paths.timeseries_paths, debug=debug
     )
-    assert out_corrections_paths.ionospheric_corrections is not None
+
     # Update the output paths with the corrections to only pass one object
     out_paths_with_corr = OutputPathsWithCorrections(
         **asdict(out_paths),
-        ionospheric_corrections=out_corrections_paths.ionospheric_corrections,
+        ionospheric_corrections=ionospheric_corrections,
     )
 
     create_products(
@@ -410,6 +407,57 @@ def create_products(
             output_dir=output_dir,
             cslc_file_list=cfg.cslc_file_list,
         )
+
+
+def _maybe_run_corrections(
+    cfg: DisplacementWorkflow,
+    timeseries_paths: Sequence[Path],
+    debug: bool = False,
+) -> list[Path] | None:
+    """Run dolphin's corrections workflow, unless there is nothing to run it on.
+
+    `dolphin`'s `run_corrections` needs the CSLC static layers for line-of-sight
+    vectors and raises when none are given. The runconfig documents them as
+    optional -- "If none provided, corrections using CSLC static_layer are
+    skipped" -- and everything downstream already honors that: `create_products`
+    falls back to `[None] * len(timeseries_paths)` and the product writer emits
+    an empty ionosphere layer. Only the call site assumed they were always
+    present, so a stack processed without static layers -- a stripmap stack,
+    say -- failed here *after* the entire workflow had already run.
+
+    Parameters
+    ----------
+    cfg : DisplacementWorkflow
+        The resolved workflow config. `cfg.correction_options.geometry_files`
+        decides whether there is anything to correct with.
+    timeseries_paths : sequence of Path
+        The inverted timeseries rasters to correct.
+    debug : bool
+        Passed through to the corrections workflow's logging.
+
+    Returns
+    -------
+    list of Path, or None
+        The per-date ionospheric correction rasters, or `None` when the
+        workflow was skipped.
+
+    """
+    if not cfg.correction_options.geometry_files:
+        logger.info(
+            "No CSLC static layers provided: skipping the corrections workflow."
+            " Products will carry an empty ionosphere layer."
+        )
+        return None
+
+    out_corrections_paths = run_corrections(
+        cfg=cfg,
+        correction_options=cfg.correction_options,
+        timeseries_paths=timeseries_paths,
+        out_dir=cfg.work_directory,
+        debug=debug,
+    )
+    assert out_corrections_paths.ionospheric_corrections is not None
+    return out_corrections_paths.ionospheric_corrections
 
 
 def _assert_dates_match(

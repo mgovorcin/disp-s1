@@ -11,6 +11,7 @@ from disp_s1.cli.run import run_main
 from disp_s1.main import (
     _assert_no_compressed_slc_conflicts,
     _filter_before_last_processed,
+    _maybe_run_corrections,
 )
 
 TEST_DATA_DIR = Path(__file__).parent / "data/delivery_data_small"
@@ -258,3 +259,66 @@ def test_assert_no_compressed_slc_conflicts_no_ccslc_is_noop():
         _real("T027-056725-IW1", "20170301"),
     ]
     _assert_no_compressed_slc_conflicts(files, "DISP_S1_HISTORICAL")
+
+
+class _FakeCorrectionOptions:
+    """Stand-in for `CorrectionOptions`, carrying only what the guard reads."""
+
+    def __init__(self, geometry_files):
+        self.geometry_files = geometry_files
+
+
+class _FakeCfg:
+    """Stand-in for `DisplacementWorkflow`, with just the corrections inputs."""
+
+    def __init__(self, geometry_files):
+        self.correction_options = _FakeCorrectionOptions(geometry_files)
+        self.work_directory = Path("work")
+
+
+def test_maybe_run_corrections_skips_without_geometry_files(monkeypatch):
+    """Without CSLC static layers there is nothing to correct with, so skip.
+
+    Regression test: `run_corrections` was called unconditionally, and it
+    raises on empty `geometry_files`. A stack processed without static layers
+    -- a stripmap stack, say -- therefore failed at the very last step, after
+    phase linking, unwrapping and timeseries inversion had all completed.
+    """
+
+    def _fail(**kwargs):
+        raise AssertionError("run_corrections must not be called")
+
+    monkeypatch.setattr("disp_s1.main.run_corrections", _fail)
+
+    result = _maybe_run_corrections(
+        cfg=_FakeCfg(geometry_files=[]),
+        timeseries_paths=[Path("timeseries/20170217_20170301.tif")],
+    )
+
+    # `None` is what `create_products` reads as "write an empty iono layer".
+    assert result is None
+
+
+def test_maybe_run_corrections_runs_with_geometry_files(monkeypatch):
+    """With static layers present, the corrections workflow still runs."""
+    expected = [Path("iono/20170301.tif")]
+    calls = []
+
+    class _Paths:
+        ionospheric_corrections = expected
+
+    def _record(**kwargs):
+        calls.append(kwargs)
+        return _Paths()
+
+    monkeypatch.setattr("disp_s1.main.run_corrections", _record)
+
+    timeseries_paths = [Path("timeseries/20170217_20170301.tif")]
+    result = _maybe_run_corrections(
+        cfg=_FakeCfg(geometry_files=[Path("los_east.tif")]),
+        timeseries_paths=timeseries_paths,
+    )
+
+    assert result == expected
+    assert len(calls) == 1
+    assert calls[0]["timeseries_paths"] == timeseries_paths
